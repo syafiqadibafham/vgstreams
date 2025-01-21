@@ -4,7 +4,7 @@ const app = express();
 import path from 'path'
 import cors from 'cors'
 app.use(cors())
-import manifest from './manifest.json' assert {type: 'json'}
+const manifest = JSON.parse(fs.readFileSync('./manifest.json', 'utf-8'));
 async function fetchStreams () {
     const response = await fetch('https://ppv.land/api/streams')
     const streamData = await response.json()
