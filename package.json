@@ -1,5 +1,5 @@
 {
-  "type": "module"
+  "type": "module",
   "dependencies": {
     "express": "^4.21.2",
     "stremio-addon-sdk": "^1.6.10"
