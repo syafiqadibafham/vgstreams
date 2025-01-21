@@ -2,7 +2,7 @@ import fs from 'fs'
 import express from 'express'
 const app = express();
 import path from 'path'
-import manifest from './manifest.json' 
+import manifest from './manifest.json' assert {type: 'json'}
 async function fetchStreams () {
     const response = await fetch('https://ppv.land/api/streams')
     const streamData = await response.json()
@@ -191,7 +191,7 @@ async function main() {
 
         // Start the server
         app.get('/manifest.json', (req, res) => {
-
+            res.send(manifest)
         })
         app.listen(3000, () => {
             console.log("Listening on port 3000");
