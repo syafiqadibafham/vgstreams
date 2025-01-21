@@ -192,7 +192,7 @@ async function main() {
         setInterval(async () => {
             console.log("Running periodic task...");
             await performTasks();
-        }, 120000);  // 120,000 ms = 2 minutes
+        }, 360000) // 120,000 ms = 2 minutes
 
         // Serve the manifest file
         app.get('/manifest.json', (req, res) => {
