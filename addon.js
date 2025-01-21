@@ -156,7 +156,8 @@ async function pushStreams(streams) {
     });
 }
 
-async function main() {
+// Function to perform the tasks
+async function performTasks() {
     try {
         // Delete existing files in the directories
         const catalogPath = path.join(__dirname, 'catalog', 'NBA');
@@ -177,6 +178,21 @@ async function main() {
 
         // Serve the JSON files
         serveFiles();
+    } catch (error) {
+        console.error("Error occurred during periodic task:", error);
+    }
+}
+
+async function main() {
+    try {
+        // Perform tasks once immediately
+        await performTasks();
+
+        // Schedule the tasks to run every 2 minutes (120,000 ms)
+        setInterval(async () => {
+            console.log("Running periodic task...");
+            await performTasks();
+        }, 120000);  // 120,000 ms = 2 minutes
 
         // Serve the manifest file
         app.get('/manifest.json', (req, res) => {
