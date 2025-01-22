@@ -14,7 +14,7 @@
         }
         ,{
             "id": "footballStreams",
-            "type": "Football",
+            "type": "FOOTBALL",
             "name": "FOOTBALL"
         }
     ],
