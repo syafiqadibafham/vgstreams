@@ -1,16 +1,21 @@
 {
     "id": "vg.streams",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "name": "VGStreams",
-    "description": "Free NBA Streams, in Stremio! ",
+    "description": "Free Sports Streams, in Stremio! ",
     "logo": "https://www.stremio.com/website/stremio-logo-small.png",
     "resources": ["catalog", "meta", "stream"],
-    "types": ["NBA", "hls"],
+    "types": ["NBA","FOOTBALL", "hls"],
     "catalogs": [
         {
             "id": "nbaStreams",
             "type": "NBA",
             "name": "NBA"
+        }
+        ,{
+            "id": "footballStreams",
+            "type": "Football",
+            "name": "FOOTBALL"
         }
     ],
     "idPrefixes": ["vgstream_"]

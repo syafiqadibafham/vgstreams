@@ -1,11 +1,16 @@
-import fs from 'fs'
-import express from 'express'
-import path from 'path'
-import cors from 'cors'
+import fs from 'fs';
+import express from 'express';
+import path from 'path';
+import cors from 'cors';
+import fetch from 'node-fetch'; // Ensure node-fetch is installed.
 import { fileURLToPath } from 'url';
+import { SPORT_IDS } from './config.js';
+
+const PORT = process.env.PORT || 3000;
+const API_BASE_URL = 'https://ppv.land/api';
 
 const app = express();
-app.use(cors())
+app.use(cors());
 
 // Get the current directory using import.meta.url
 const __filename = fileURLToPath(import.meta.url);
@@ -18,195 +23,177 @@ const ensureDirExists = (dirPath) => {
     }
 };
 
-// Path to the manifest file
-const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf-8'));
-
-// Delete files in the given directory
-const deleteFiles = (dirPath) => {
+// Delete all files in a directory
+const deleteDirectoryContents = (dirPath) => {
     if (fs.existsSync(dirPath)) {
         fs.readdirSync(dirPath).forEach((file) => {
             const filePath = path.join(dirPath, file);
-            if (fs.statSync(filePath).isDirectory()) {
-                deleteFiles(filePath); // Recursively delete files in subdirectories
-            } else {
-                fs.unlinkSync(filePath); // Delete file
-            }
+            fs.rmSync(filePath, { recursive: true, force: true });
         });
-    } else {
-        console.log(`Directory not found: ${dirPath}`);
     }
 };
 
-// Function to serve static files
-function serveFiles() {
-    // Serve static files from these directories
+// Fetch data from a given URL
+const fetchData = async (url) => {
+    try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+        return await response.json();
+    } catch (error) {
+        console.error(`Error fetching data from ${url}:`, error);
+        throw error;
+    }
+};
+
+// Get streams for a given sport ID
+const fetchStreams = async (sportId) => {
+    try {
+        const url = `${API_BASE_URL}/streams`;
+        const streamData = await fetchData(url);
+
+        if (!streamData || !Array.isArray(streamData.streams)) {
+            console.error(`Invalid stream data for sport ID ${sportId}:`, streamData);
+            return { streams: [] }; // Return an empty object with streams array to avoid errors.
+        }
+
+        return streamData.streams.find((stream) => stream.id === sportId) || { streams: [] };
+    } catch (error) {
+        console.error(`Error fetching streams for sport ID ${sportId}:`, error);
+        return { streams: [] }; // Return empty streams in case of error.
+    }
+};
+
+// Process streams and generate catalog, metas, and streams
+const processStreams = async (sportName, sportId) => {
+    const { streams } = await fetchStreams(sportId);
+
+    if (!streams || !Array.isArray(streams)) {
+        console.error(`Streams data for ${sportName} (${sportId}) is invalid:`, streams);
+        return { sportStreamsJSON: { metas: [] }, metas: [], streamFiles: [] };
+    }
+
+    const sportStreamsJSON = { metas: [] };
+    const metas = [];
+    let streamFiles = [];
+
+    await Promise.all(
+        streams.map(async (stream) => {
+            const streamDetails = await fetchData(`${API_BASE_URL}/streams/${stream.id}`);
+            const elementData = streamDetails.data;
+
+            const metaId = `vgstream_${elementData.id}`;
+            const baseData = {
+                id: metaId,
+                type: sportName,
+                name: elementData.name,
+                poster: elementData.poster,
+                genres: ['Sports'],
+            };
+
+            sportStreamsJSON.metas.push(baseData);
+
+            metas.push({
+                meta: {
+                    ...baseData,
+                    description: `${sportName} Game: ${elementData.name}`,
+                    logo: elementData.poster,
+                    background: elementData.poster,
+                    runtime: '',
+                },
+            });
+
+            streamFiles.push({
+                streams: [
+                    {
+                        title: elementData.tag,
+                        url: elementData.m3u8,
+                        type: 'tv',
+                        behaviorHints: { notWebReady: false },
+                        id: stream.id,
+                    },
+                ],
+            });
+        })
+    );
+
+    return { sportStreamsJSON, metas, streamFiles };
+};
+
+// Write JSON data to a file
+const writeToFile = (filePath, data) => {
+    ensureDirExists(path.dirname(filePath));
+    return fs.promises.writeFile(filePath, JSON.stringify(data, null, 2));
+};
+
+// Save catalogs, metas, and streams to files
+const saveDataToFiles = async (sportName, catalog, metas, streamFiles) => {
+    const baseDir = (type) => path.join(__dirname, type, sportName);
+
+    // Clear old data
+    deleteDirectoryContents(baseDir('catalog'));
+    deleteDirectoryContents(baseDir('meta'));
+    deleteDirectoryContents(baseDir('stream'));
+
+    // Save new data
+    await writeToFile(path.join(baseDir('catalog'), `${sportName.toLowerCase()}Streams.json`), catalog);
+    await Promise.all(
+        metas.map((meta) =>
+            writeToFile(path.join(baseDir('meta'), `${meta.meta.id}.json`), meta)
+        )
+    );
+    //pushStreams(streams);
+    await Promise.all(
+        streamFiles.map((stream, index) =>
+            writeToFile(path.join(baseDir('stream'), `vgstream_${stream.streams[0].id}.json`), stream)
+        )
+    );
+};
+
+// Serve static files
+const serveStaticFiles = () => {
     app.use('/catalog', express.static(path.join(__dirname, 'catalog')));
     app.use('/meta', express.static(path.join(__dirname, 'meta')));
     app.use('/stream', express.static(path.join(__dirname, 'stream')));
-}
+};
 
-async function fetchStreams() {
-    const response = await fetch('https://ppv.land/api/streams');
-    const streamData = await response.json();
-    const nbaStreams = streamData.streams.find(element => element.id === 37);
-    return nbaStreams;
-}
-
-async function getNameAndLink(nbaStreams) {
-    let nbaStreamsJSON = { "metas": [] };
-    let metas = [];
-    let streams = [];
-
-    for (const element of nbaStreams) {
-        const response = await fetch("https://ppv.land/api/streams/" + element.id);
-        const jsonData = await response.json();
-        const elementData = jsonData["data"];
-
-        let addElement = {
-            "type": "NBA",
-            "id": "vgstream_" + elementData.id,
-            "name": elementData.name,
-            "poster": elementData.poster,
-            "genres": ["Sports"]
-        };
-
-        let meta = {
-            "meta": {
-                "id": "vgstream_" + elementData.id,
-                "type": "NBA",
-                "name": elementData.name,
-                "poster": elementData.poster,
-                "genres": ["Sports"],
-                "description": "NBA Game: " + elementData.name,
-                "logo": elementData.poster,
-                "background": elementData.poster,
-                "runtime": ""
-            }
-        };
-
-        let stream = {
-            "streams": [
-                {
-                    "title": "Source 1 (PPV)",
-                    "url": elementData["m3u8"],
-                    "type": "tv",
-                    "behaviorHints": { "notWebReady": false },
-                    "id": element.id
-                }
-            ]
-        };
-
-        nbaStreamsJSON.metas.push(addElement);
-        metas.push(meta);
-        streams.push(stream);
-    }
-
-    return { nbaStreamsJSON, metas, streams };
-}
-
-async function getNBACatalog() {
-    const streamData = await fetchStreams();
-    const { nbaStreamsJSON, metas, streams } = await getNameAndLink(streamData.streams);
-    return { nbaStreamsJSON, metas, streams };
-}
-
-async function pushCatalog(nbaCatalog) {
-    const jsonString = JSON.stringify(nbaCatalog, null, 2);
-    const catalogPath = path.join(__dirname, 'catalog', 'NBA');
-    ensureDirExists(catalogPath);
-    const fp = path.join(catalogPath, 'nbaStreams.json');
-    fs.writeFile(fp, jsonString, (err) => {
-        if (err) {
-            console.log('Error writing file:', err);
-        } else {
-            console.log('File has been saved!');
+// Main processing function
+const performTasks = async () => {
+    for (const [sportName, sportId] of Object.entries(SPORT_IDS)) {
+        try {
+            console.log(`Processing ${sportName}...`);
+            const { sportStreamsJSON, metas, streamFiles } = await processStreams(sportName, sportId);
+            
+            await saveDataToFiles(sportName, sportStreamsJSON, metas, streamFiles);
+        } catch (error) {
+            console.error(`Error processing ${sportName}:`, error);
         }
-    });
-}
-
-async function pushMetas(metas) {
-    metas.forEach(element => {
-        const jsonString = JSON.stringify(element, null, 2);
-        const metaPath = path.join(__dirname, 'meta', 'NBA');
-        ensureDirExists(metaPath);
-        const fp = path.join(metaPath, element.meta.id + ".json");
-        fs.writeFile(fp, jsonString, (err) => {
-            if (err) {
-                console.log('Error writing file:', err);
-            } else {
-                console.log('File has been saved!');
-            }
-        });
-    });
-}
-
-async function pushStreams(streams) {
-    streams.forEach(element => {
-        const jsonString = JSON.stringify(element, null, 2);
-        const streamPath = path.join(__dirname, 'stream', 'NBA');
-        ensureDirExists(streamPath);
-        const fp = path.join(streamPath, "vgstream_" + element.streams[0].id + ".json");
-        fs.writeFile(fp, jsonString, (err) => {
-            if (err) {
-                console.log('Error writing file:', err);
-            } else {
-                console.log('File has been saved!');
-            }
-        });
-    });
-}
-
-// Function to perform the tasks
-async function performTasks() {
-    try {
-        // Delete existing files in the directories
-        const catalogPath = path.join(__dirname, 'catalog', 'NBA');
-        const metaPath = path.join(__dirname, 'meta', 'NBA');
-        const streamPath = path.join(__dirname, 'stream', 'NBA');
-
-        deleteFiles(catalogPath);
-        deleteFiles(metaPath);
-        deleteFiles(streamPath);
-
-        // Fetch the NBA catalog data
-        const { nbaStreamsJSON, metas, streams } = await getNBACatalog();
-
-        // Push the data to respective files
-        await pushCatalog(nbaStreamsJSON);
-        await pushMetas(metas);
-        await pushStreams(streams);
-
-        // Serve the JSON files
-        serveFiles();
-    } catch (error) {
-        console.error("Error occurred during periodic task:", error);
     }
-}
+    serveStaticFiles();
+};
 
-async function main() {
+// Main entry point
+const main = async () => {
     try {
-        // Perform tasks once immediately
+        // Initial processing
         await performTasks();
 
-        // Schedule the tasks to run every 2 minutes (120,000 ms)
+        // Periodic task every 6 minutes
         setInterval(async () => {
             console.log("Running periodic task...");
             await performTasks();
-        }, 360000) // 120,000 ms = 2 minutes
+        }, 360000); // 360,000 ms = 6 minutes
 
-        // Serve the manifest file
-        app.get('/manifest.json', (req, res) => {
-            res.json(manifest);
-        });
+        // Serve static files and manifest
+        const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf-8'));
+        app.get('/manifest.json', (req, res) => res.json(manifest));
 
         // Start the server
-        app.listen(3000, () => {
-            console.log("Listening on port 3000");
+        app.listen(PORT, () => {
+            console.log(`Server is running on http://localhost:${PORT}`);
         });
     } catch (error) {
-        console.error("Error occurred:", error);
+        console.error('Critical error:', error);
     }
-}
+};
 
-// Call the main function to execute
 main();
