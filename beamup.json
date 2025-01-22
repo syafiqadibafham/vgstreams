@@ -1,4 +1,6 @@
 {
     "projectName": "vgstream",
-    "lastCommit": "79a8849"
+    "lastCommit": "2deec0c",
+    "engine": "nodejs",
+    "port": 3000
 }
