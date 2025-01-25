@@ -4,7 +4,7 @@ import fetch from "node-fetch";
 const { addonBuilder, serveHTTP } = pkg;
 
 
-const apiUrl = "https://ppv.land/api/streams";
+const apiUrl = "https://ppv.land/";
 
 // Define manifest (updated dynamically when catalogs are initialized)
 const manifest = {
@@ -12,8 +12,8 @@ const manifest = {
     version: "1.0.0",
     name: "PPV Sports Addon",
     description: "Live sports streams from the PPV API",
-    resources: ["catalog", "stream"],
-    types: ["sports"], // Only sports type is supported
+    resources: ["catalog", "meta", "stream"],
+    types: ["sports", "hls"], // Only sports type is supported
     idPrefixes: ["ppv_"],
     catalogs: [], // Will be populated dynamically
 };
@@ -23,7 +23,7 @@ let responseFromPPV = {};
 // Fetch data from the API to generate catalogs dynamically
 async function initializeManifest() {
     try {
-        const response = await fetch(apiUrl);
+        const response = await fetch(apiUrl+'api/streams');
         const data = await response.json();
 
         // Group data by category or type (adjust if API structure differs)
@@ -44,12 +44,38 @@ async function initializeManifest() {
     }
 }
 
+async function defineMetaHandler(builder) {
+    builder.defineMetaHandler(async ({ args }) => {
+        console.log('id: '+ JSON.stringify(args, null, 4));  
+        const [, sportId] = args.id.split("_");
+        
+        if (args.type === 'sports') {
+            
+            const metaObj = {
+                id: args.id,
+                type: category,
+                name: stream.name,
+                poster: stream.poster,
+                posterShape: 'landscape',
+                //genres: ['Sports', category],
+            }
+            return Promise.resolve({ meta: metaObj })
+        } else {
+            // otherwise return no meta
+            return Promise.resolve({ meta: {} })
+        }
+        
+    });
+}
+
 // Catalog handler
 async function defineCatalogHandler(builder) {
     // Catalog handler for sports content
     builder.defineCatalogHandler(async ({ type, id }) => {
         const [, sportId] = id.split("_");
         const metas = [];
+        const streams = [];
+        console.log('fetch catalogs: ', id);
         
         try {            
             responseFromPPV[sportId].forEach(stream => {
@@ -60,6 +86,7 @@ async function defineCatalogHandler(builder) {
                     type: category,
                     name: stream.name,
                     poster: stream.poster,
+                    posterShape: 'landscape',
                     genres: ['Sports', category],
                 };
                 
@@ -72,9 +99,21 @@ async function defineCatalogHandler(builder) {
                     background: stream.poster,
                     runtime: '',
                 });
-            });
-            
-            return { metas };
+
+                streams.push({
+                    streams: [
+                        {
+                            title: stream.tag,
+                            url: apiUrl + 'live/'+ stream["uri_name"],
+                            type: 'tv',
+                            behaviorHints: { notWebReady: false },
+                            id: stream.id,
+                            genre: 'Sports'
+                        },
+                    ]
+                });
+            }); 
+            return { metas, streams };
             }
              catch (err) {
                 console.error("Error fetching catalog:", err);
@@ -86,23 +125,25 @@ async function defineCatalogHandler(builder) {
 // Stream handler
 async function defineStreamHandler(builder) {
     // Stream handler for sports content
-    builder.defineStreamHandler(async ({ id }) => {
+    builder.defineStreamHandler(async({ id }) => {
+        console.log('id: '+ JSON.stringify(id, null, 4));  
         const [, sportId] = id.split("_");
         const streams = [];
         
 
         try {
             // Map the API data to Stremio's stream format
+            console.log('stream: '+ JSON.stringify(responseFromPPV[sportId], null, 4));  
             responseFromPPV[sportId].forEach(stream => {   
-                console.log('stream: '+ JSON.stringify(stream, null, 4));             
                 streams.push({
                     streams: [
                         {
                             title: stream.tag,
-                            url: stream.m3u8,
+                            url: apiUrl + 'live/'+ stream["uri_name"],
                             type: 'tv',
                             behaviorHints: { notWebReady: false },
                             id: stream.id,
+                            genre: 'Sports'
                         },
                     ]
                 });
@@ -135,8 +176,9 @@ async function defineStreamHandler(builder) {
     const builder = new addonBuilder(manifest);
 
     // Define handlers
-    await defineCatalogHandler(builder);
     await defineStreamHandler(builder);
+    await defineMetaHandler(builder);
+    await defineCatalogHandler(builder);
 
     // Serve the addon
     serveHTTP(builder.getInterface(), { port: 7000 });
