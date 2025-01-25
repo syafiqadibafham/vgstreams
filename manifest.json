@@ -8,14 +8,14 @@
     "types": ["NBA","FOOTBALL", "hls"],
     "catalogs": [
         {
-            "id": "nbaStreams",
-            "type": "NBA",
-            "name": "NBA"
-        }
-        ,{
             "id": "footballStreams",
             "type": "FOOTBALL",
             "name": "FOOTBALL"
+        },
+        {
+            "id": "nbaStreams",
+            "type": "NBA",
+            "name": "NBA"
         }
     ],
     "idPrefixes": ["vgstream_"]

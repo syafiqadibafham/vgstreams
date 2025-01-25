@@ -1,199 +1,144 @@
-import fs from 'fs';
-import express from 'express';
-import path from 'path';
-import cors from 'cors';
-import fetch from 'node-fetch'; // Ensure node-fetch is installed.
-import { fileURLToPath } from 'url';
-import { SPORT_IDS } from './config.js';
+import pkg from 'stremio-addon-sdk';
+import fetch from "node-fetch";
 
-const PORT = process.env.PORT || 3000;
-const API_BASE_URL = 'https://ppv.land/api';
+const { addonBuilder, serveHTTP } = pkg;
 
-const app = express();
-app.use(cors());
 
-// Get the current directory using import.meta.url
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const apiUrl = "https://ppv.land/api/streams";
 
-// Ensure directories exist before writing files
-const ensureDirExists = (dirPath) => {
-    if (!fs.existsSync(dirPath)) {
-        fs.mkdirSync(dirPath, { recursive: true });
-    }
+// Define manifest (updated dynamically when catalogs are initialized)
+const manifest = {
+    id: "community.ppvaddon",
+    version: "1.0.0",
+    name: "PPV Sports Addon",
+    description: "Live sports streams from the PPV API",
+    resources: ["catalog", "stream"],
+    types: ["sports"], // Only sports type is supported
+    idPrefixes: ["ppv_"],
+    catalogs: [], // Will be populated dynamically
 };
 
-// Delete all files in a directory
-const deleteDirectoryContents = (dirPath) => {
-    if (fs.existsSync(dirPath)) {
-        fs.readdirSync(dirPath).forEach((file) => {
-            const filePath = path.join(dirPath, file);
-            fs.rmSync(filePath, { recursive: true, force: true });
+let responseFromPPV = {};
+
+// Fetch data from the API to generate catalogs dynamically
+async function initializeManifest() {
+    try {
+        const response = await fetch(apiUrl);
+        const data = await response.json();
+
+        // Group data by category or type (adjust if API structure differs)
+        const categories = data["streams"];
+        categories.forEach(sportStreams => {
+            responseFromPPV[sportStreams["id"]] = sportStreams["streams"];
         });
+        // Generate catalog entries for each category
+        manifest.catalogs = categories.map((category) => ({
+            type: "sports",
+            id: `ppv_${category.id}`,
+            name: category.category,
+        }));
+
+        console.log("Dynamic catalogs initialized:", manifest.catalogs);
+    } catch (err) {
+        console.error("Error initializing catalogs:", err);
     }
-};
+}
 
-// Fetch data from a given URL
-const fetchData = async (url) => {
-    try {
-        const response = await fetch(url);
-        if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
-        return await response.json();
-    } catch (error) {
-        console.error(`Error fetching data from ${url}:`, error);
-        throw error;
-    }
-};
-
-// Get streams for a given sport ID
-const fetchStreams = async (sportId) => {
-    try {
-        const url = `${API_BASE_URL}/streams`;
-        const streamData = await fetchData(url);
-
-        if (!streamData || !Array.isArray(streamData.streams)) {
-            console.error(`Invalid stream data for sport ID ${sportId}:`, streamData);
-            return { streams: [] }; // Return an empty object with streams array to avoid errors.
-        }
-
-        return streamData.streams.find((stream) => stream.id === sportId) || { streams: [] };
-    } catch (error) {
-        console.error(`Error fetching streams for sport ID ${sportId}:`, error);
-        return { streams: [] }; // Return empty streams in case of error.
-    }
-};
-
-// Process streams and generate catalog, metas, and streams
-const processStreams = async (sportName, sportId) => {
-    const { streams } = await fetchStreams(sportId);
-
-    if (!streams || !Array.isArray(streams)) {
-        console.error(`Streams data for ${sportName} (${sportId}) is invalid:`, streams);
-        return { sportStreamsJSON: { metas: [] }, metas: [], streamFiles: [] };
-    }
-
-    const sportStreamsJSON = { metas: [] };
-    const metas = [];
-    let streamFiles = [];
-
-    await Promise.all(
-        streams.map(async (stream) => {
-            const streamDetails = await fetchData(`${API_BASE_URL}/streams/${stream.id}`);
-            const elementData = streamDetails.data;
-
-            const metaId = `vgstream_${elementData.id}`;
-            const baseData = {
-                id: metaId,
-                type: sportName,
-                name: elementData.name,
-                poster: elementData.poster,
-                genres: ['Sports'],
-            };
-
-            sportStreamsJSON.metas.push(baseData);
-
-            metas.push({
-                meta: {
+// Catalog handler
+async function defineCatalogHandler(builder) {
+    // Catalog handler for sports content
+    builder.defineCatalogHandler(async ({ type, id }) => {
+        const [, sportId] = id.split("_");
+        const metas = [];
+        
+        try {            
+            responseFromPPV[sportId].forEach(stream => {
+                const metaId = `ppv_${stream.id}`;
+                const category = stream["category_name"];
+                const baseData = {
+                    id: metaId,
+                    type: category,
+                    name: stream.name,
+                    poster: stream.poster,
+                    genres: ['Sports', category],
+                };
+                
+                //sportStreamsJSON.metas.push(baseData);
+                
+                metas.push({
                     ...baseData,
-                    description: `${sportName} Game: ${elementData.name}`,
-                    logo: elementData.poster,
-                    background: elementData.poster,
+                    description: `${category} Game: ${stream.name}`,
+                    logo: stream.logo,
+                    background: stream.poster,
                     runtime: '',
-                },
+                });
             });
-
-            streamFiles.push({
-                streams: [
-                    {
-                        title: elementData.tag,
-                        url: elementData.m3u8,
-                        type: 'tv',
-                        behaviorHints: { notWebReady: false },
-                        id: stream.id,
-                    },
-                ],
-            });
-        })
-    );
-
-    return { sportStreamsJSON, metas, streamFiles };
-};
-
-// Write JSON data to a file
-const writeToFile = (filePath, data) => {
-    ensureDirExists(path.dirname(filePath));
-    return fs.promises.writeFile(filePath, JSON.stringify(data, null, 2));
-};
-
-// Save catalogs, metas, and streams to files
-const saveDataToFiles = async (sportName, catalog, metas, streamFiles) => {
-    const baseDir = (type) => path.join(__dirname, type, sportName);
-
-    // Clear old data
-    deleteDirectoryContents(baseDir('catalog'));
-    deleteDirectoryContents(baseDir('meta'));
-    deleteDirectoryContents(baseDir('stream'));
-
-    // Save new data
-    await writeToFile(path.join(baseDir('catalog'), `${sportName.toLowerCase()}Streams.json`), catalog);
-    await Promise.all(
-        metas.map((meta) =>
-            writeToFile(path.join(baseDir('meta'), `${meta.meta.id}.json`), meta)
-        )
-    );
-    //pushStreams(streams);
-    await Promise.all(
-        streamFiles.map((stream, index) =>
-            writeToFile(path.join(baseDir('stream'), `vgstream_${stream.streams[0].id}.json`), stream)
-        )
-    );
-};
-
-// Serve static files
-const serveStaticFiles = () => {
-    app.use('/catalog', express.static(path.join(__dirname, 'catalog')));
-    app.use('/meta', express.static(path.join(__dirname, 'meta')));
-    app.use('/stream', express.static(path.join(__dirname, 'stream')));
-};
-
-// Main processing function
-const performTasks = async () => {
-    for (const [sportName, sportId] of Object.entries(SPORT_IDS)) {
-        try {
-            console.log(`Processing ${sportName}...`);
-            const { sportStreamsJSON, metas, streamFiles } = await processStreams(sportName, sportId);
             
-            await saveDataToFiles(sportName, sportStreamsJSON, metas, streamFiles);
-        } catch (error) {
-            console.error(`Error processing ${sportName}:`, error);
+            return { metas };
+            }
+             catch (err) {
+                console.error("Error fetching catalog:", err);
+                return { metas: [] };
+            }
+    });
+}
+
+// Stream handler
+async function defineStreamHandler(builder) {
+    // Stream handler for sports content
+    builder.defineStreamHandler(async ({ id }) => {
+        const [, sportId] = id.split("_");
+        const streams = [];
+        
+
+        try {
+            // Map the API data to Stremio's stream format
+            responseFromPPV[sportId].forEach(stream => {   
+                console.log('stream: '+ JSON.stringify(stream, null, 4));             
+                streams.push({
+                    streams: [
+                        {
+                            title: stream.tag,
+                            url: stream.m3u8,
+                            type: 'tv',
+                            behaviorHints: { notWebReady: false },
+                            id: stream.id,
+                        },
+                    ]
+                });
+            });
+            /*
+            const streams = data["streams"].map((stream) => ({
+                title: stream["streams"].tag || "Stream",
+                url: stream.streams.m3u8, // The playable stream URL
+                description: stream.streams.description || null,
+                type: 'tv',
+                behaviorHints: { notWebReady: false },
+                id: stream.streams.id,
+            }));*/
+            
+            console.log(streams);
+
+            return { streams };
+        } catch (err) {
+            console.error("Error fetching streams:", err);
+            return { streams: [] };
         }
-    }
-    serveStaticFiles();
-};
+    });
+}
 
-// Main entry point
-const main = async () => {
-    try {
-        // Initial processing
-        await performTasks();
+// Main function to initialize and serve the addon
+(async () => {
+    await initializeManifest(); // Populate manifest.catalogs
 
-        // Periodic task every 6 minutes
-        setInterval(async () => {
-            console.log("Running periodic task...");
-            await performTasks();
-        }, 360000); // 360,000 ms = 6 minutes
+    // Create the addon with the dynamically updated manifest
+    const builder = new addonBuilder(manifest);
 
-        // Serve static files and manifest
-        const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf-8'));
-        app.get('/manifest.json', (req, res) => res.json(manifest));
+    // Define handlers
+    await defineCatalogHandler(builder);
+    await defineStreamHandler(builder);
 
-        // Start the server
-        app.listen(PORT, () => {
-            console.log(`Server is running on http://localhost:${PORT}`);
-        });
-    } catch (error) {
-        console.error('Critical error:', error);
-    }
-};
+    // Serve the addon
+    serveHTTP(builder.getInterface(), { port: 7000 });
+})();
 
-main();
